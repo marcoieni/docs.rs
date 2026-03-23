@@ -25,7 +25,7 @@ runs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
 
-    - name: Build and tag the Docker image
+    - name: Build and tag web-server image
       env:
         REGISTRY: ${{ steps.login-ecr.outputs.registry }}
       uses: docker/build-push-action@v7
@@ -39,12 +39,61 @@ runs:
         cache-to: type=gha,mode=max
         build-args: GIT_VERSION=${{ github.sha }}
 
-    - name: Kick ECS to deploy new version
+    - name: Build and tag registry-watcher image
+      env:
+        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        tags: ${{ env.REGISTRY }}/docs-rs-watcher:latest
+        target: registry-watcher
+        file: dockerfiles/Dockerfile
+        push: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: GIT_VERSION=${{ github.sha }}
+
+    - name: Build and tag build-server image
+      env:
+        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        tags: ${{ env.REGISTRY }}/docs-rs-builder:latest
+        target: build-server
+        file: dockerfiles/Dockerfile
+        push: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: GIT_VERSION=${{ github.sha }}
+
+    - name: Deploy web service
       shell: bash
       env:
         CLUSTER: ${{ inputs.cluster }}
         SERVICE: docs-rs-web
       run: |
         aws ecs update-service --service ${SERVICE} --cluster ${CLUSTER} --force-new-deployment
-        # Poll every 15 seconds until a successful state has been reached. Fail after 40 failed checks.
-        aws ecs wait services-stable --services ${SERVICE} --cluster ${CLUSTER}
+
+    - name: Deploy watcher service
+      shell: bash
+      env:
+        CLUSTER: ${{ inputs.cluster }}
+        SERVICE: docs-rs-watcher
+      run: |
+        aws ecs update-service --service ${SERVICE} --cluster ${CLUSTER} --force-new-deployment
+
+    - name: Deploy builder service
+      shell: bash
+      env:
+        CLUSTER: ${{ inputs.cluster }}
+        SERVICE: docs-rs-builder
+      run: |
+        aws ecs update-service --service ${SERVICE} --cluster ${CLUSTER} --force-new-deployment
+
+    - name: Wait for services to stabilize
+      shell: bash
+      env:
+        CLUSTER: ${{ inputs.cluster }}
+      run: |
+        aws ecs wait services-stable --services docs-rs-web docs-rs-watcher docs-rs-builder --cluster ${CLUSTER}
